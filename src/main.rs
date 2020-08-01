@@ -1,5 +1,8 @@
 use eyre::{eyre, Result};
-use std::collections::BTreeMap;
+use std::{fs::File, collections::BTreeMap, io::Read, path::PathBuf};
+
+pub mod elf;
+use elf::*;
 
 /// Block size used for resetting and tracking memory which has been modified
 /// The larger this is, the fewer but more expensive memcpys() need to occur,
@@ -173,7 +176,7 @@ pub enum VmExit {
     WriteFault(VirtAddr),
 }
 
-fn main() {
+fn main() -> Result<()> {
     let mut mmu = Mmu::new(4096);
 
     let alloc1 = mmu.allocate(1).unwrap();
@@ -189,4 +192,10 @@ fn main() {
     mmu.free(alloc2).expect("Dealloc2 failed");
 
     println!("Curr address: {:?}", mmu.curr_alc);
+
+    println!("Now lets load an ELF...");
+
+    parse(PathBuf::from("ls"))?;
+
+    Ok(())
 }
