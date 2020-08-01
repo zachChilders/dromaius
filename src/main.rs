@@ -41,12 +41,13 @@ struct Mmu {
 impl Mmu {
     /// Create a new memory space which can hold `size` bytes
     pub fn new(size: usize) -> Self {
+        let base_mem = 0x10000;
         Self {
-            memory: vec![0; size],
+            memory: vec![0; size + base_mem],
             permissions: vec![Perm(0); size],
             dirty: Vec::with_capacity(size / DIRTY_BLOCK_SIZE + 1),
             dirty_bitmap: vec![0u64; size / DIRTY_BLOCK_SIZE / 64 + 1],
-            curr_alc: VirtAddr(0x10000),
+            curr_alc: VirtAddr(base_mem),
             active_alcs: BTreeMap::new(),
         }
     }
@@ -62,7 +63,9 @@ impl Mmu {
         }
 
         // Check if we're already out of memory
-        if base.0 > self.memory.len() {
+        if base.0 >= self.memory.len() {
+            println!("{}, {}", base.0, self.memory.len());
+            println!("Broken allocation");
             return None;
         }
 
@@ -71,6 +74,7 @@ impl Mmu {
 
         // Check if updated allocation is out of memory
         if self.curr_alc.0 > self.memory.len() {
+            println!("OOM");
             return None;
         }
 
@@ -93,7 +97,7 @@ impl Mmu {
         }
     }
 
-    pub fn set_permissions(&mut self, addr: VirtAddr, size: usize, mut perm: Perm) -> Option<()> {
+    fn set_permissions(&mut self, addr: VirtAddr, size: usize, mut perm: Perm) -> Option<()> {
         if DISABLE_UNINIT {
             if perm.0 & PERM_RAW != 0 {
                 perm.0 |= PERM_READ;
@@ -170,5 +174,19 @@ pub enum VmExit {
 }
 
 fn main() {
-    println!("Hello, world!");
+    let mut mmu = Mmu::new(4096);
+
+    let alloc1 = mmu.allocate(1).unwrap();
+    let alloc2 = mmu.allocate(1024).unwrap();
+    let alloc3 = mmu.allocate(2048).unwrap();
+
+    println!("Base address of alloc1: {:?}", alloc1);
+    println!("Base address of alloc2: {:?}", alloc2);
+    println!("Base address of alloc3: {:?}", alloc3);
+
+    mmu.free(alloc3).expect("Dealloc3 failed");
+    mmu.free(alloc1).expect("Dealloc1 failed");
+    mmu.free(alloc2).expect("Dealloc2 failed");
+
+    println!("Curr address: {:?}", mmu.curr_alc);
 }
