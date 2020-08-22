@@ -27,13 +27,36 @@ pub const PERM_RAW: u8 = 1 << 3;
 pub struct Perm(pub u8);
 
 /// A guest virtual address
-#[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtAddr(pub usize);
+pub struct VirtAddr {
+    pub address: u64,
+    pub content: u8,
+}
+
+impl VirtAddr {
+    fn new(address: u64, content: u8) -> Self {
+        Self {
+            address,
+            content
+        }
+    }
+}
 
 impl From<u64> for VirtAddr {
     fn from(address: u64) -> Self {
-        VirtAddr(address as usize)
+        VirtAddr {
+            address,
+            content: 0,
+        }
+    }
+}
+
+impl From<usize> for VirtAddr {
+    fn from(address: usize) -> Self {
+        VirtAddr {
+            address: address as u64,
+            content: 0,
+        }
     }
 }
 
@@ -55,13 +78,15 @@ impl Mmu {
             permissions: vec![Perm(0); size],
             dirty: Vec::with_capacity(size / DIRTY_BLOCK_SIZE + 1),
             dirty_bitmap: vec![0u64; size / DIRTY_BLOCK_SIZE / 64 + 1],
-            curr_alc: VirtAddr(base_mem),
+            curr_alc: VirtAddr::from(base_mem),
             active_alcs: BTreeMap::new(),
         }
     }
 
+    /// Allocates a memory block `size` long at `offset`.  If no `offset` is given, uses 
+    /// `curr_alc` instead.
     pub fn allocate(&mut self, size: usize, offset: Option<VirtAddr>) -> Option<VirtAddr> {
-        let align_size = (size + 0x01f) & !0x0f;
+        let align_size = ((size + 0x01f) & !0x0f) as u64;
 
         let base = offset.unwrap_or(self.curr_alc);
 
@@ -71,17 +96,17 @@ impl Mmu {
         }
 
         // Check if we're already out of memory
-        if base.0 >= self.memory.len() {
-            println!("{}, {}", base.0, self.memory.len());
+        if base.address >= self.memory.len() as u64 {
+            println!("{}, {}", base.address, self.memory.len());
             println!("Broken allocation");
             return None;
         }
 
         // Update current allocation if possible
-        self.curr_alc = VirtAddr(self.curr_alc.0.checked_add(align_size)?);
+        self.curr_alc = VirtAddr::from(self.curr_alc.address.checked_add(align_size)?);
 
         // Check if updated allocation is out of memory
-        if self.curr_alc.0 > self.memory.len() {
+        if self.curr_alc.address > self.memory.len() as u64 {
             println!("OOM");
             return None;
         }
@@ -105,6 +130,14 @@ impl Mmu {
         }
     }
 
+    pub fn write(&mut self, base: VirtAddr, data: &[u8], size: usize) -> Result<(), VmExit> {
+        for (offset, datum) in data.iter().enumerate() {
+            
+        };
+
+        Ok(())
+    }
+
     fn set_permissions(&mut self, addr: VirtAddr, size: usize, mut perm: Perm) -> Option<()> {
         if DISABLE_UNINIT {
             if perm.0 & PERM_RAW != 0 {
@@ -114,19 +147,19 @@ impl Mmu {
 
         // Set permissions for every byte in the given range
         self.permissions
-            .get_mut(addr.0..addr.0.checked_add(size)?)?
+            .get_mut((addr.address as usize)..(addr.address.checked_add(size as u64)? as usize))?
             .iter_mut()
             .for_each(|x| *x = perm);
 
-        let block_start = addr.0 / DIRTY_BLOCK_SIZE;
-        let block_end = (addr.0 + size) / DIRTY_BLOCK_SIZE;
+        let block_start = addr.address / DIRTY_BLOCK_SIZE as u64;
+        let block_end = (addr.address + size as u64) / DIRTY_BLOCK_SIZE as u64;
         
         for block in block_start..=block_end {
-            let idx = block / 64;
-            let bit = block % 64;
+            let idx = (block / 64) as usize;
+            let bit = (block % 64) as usize;
 
             if self.dirty_bitmap[idx] & (1 << bit) == 0 {
-                self.dirty.push(block);
+                self.dirty.push(block as usize);
 
                 self.dirty_bitmap[idx] |= 1 << bit;
             }
