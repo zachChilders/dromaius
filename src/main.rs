@@ -3,8 +3,13 @@ use std::{
     collections::BTreeMap,
     fs::{self, File},
     io::Read,
+    io::Seek,
     path::PathBuf,
 };
+
+use std::io;
+use std::io::prelude::*;
+use std::io::SeekFrom;
 
 use goblin::{elf::Elf, error, Object};
 
@@ -32,33 +37,13 @@ pub const PERM_RAW: u8 = 1 << 3;
 pub struct Perm(pub u8);
 
 /// A guest virtual address
+#[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct VirtAddr {
-    pub address: u64,
-    pub content: u8,
-}
-
-impl VirtAddr {
-    fn new(address: u64, content: u8) -> Self {
-        Self { address, content }
-    }
-}
+pub struct VirtAddr(pub usize);
 
 impl From<u64> for VirtAddr {
     fn from(address: u64) -> Self {
-        VirtAddr {
-            address,
-            content: 0,
-        }
-    }
-}
-
-impl From<usize> for VirtAddr {
-    fn from(address: usize) -> Self {
-        VirtAddr {
-            address: address as u64,
-            content: 0,
-        }
+        VirtAddr(address as usize)
     }
 }
 
@@ -80,7 +65,7 @@ impl Mmu {
             permissions: vec![Perm(0); size],
             dirty: Vec::with_capacity(size / DIRTY_BLOCK_SIZE + 1),
             dirty_bitmap: vec![0u64; size / DIRTY_BLOCK_SIZE / 64 + 1],
-            curr_alc: VirtAddr::from(base_mem),
+            curr_alc: VirtAddr(base_mem),
             active_alcs: BTreeMap::new(),
         }
     }
@@ -88,7 +73,7 @@ impl Mmu {
     /// Allocates a memory block `size` long at `offset`.  If no `offset` is given, uses
     /// `curr_alc` instead.
     pub fn allocate(&mut self, size: usize, offset: Option<VirtAddr>) -> Option<VirtAddr> {
-        let align_size = ((size + 0x01f) & !0x0f) as u64;
+        let align_size = (size + 0x01f) & !0x0f;
 
         let base = offset.unwrap_or(self.curr_alc);
 
@@ -98,17 +83,17 @@ impl Mmu {
         }
 
         // Check if we're already out of memory
-        if base.address >= self.memory.len() as u64 {
-            println!("{}, {}", base.address, self.memory.len());
+        if base.0 >= self.memory.len() {
+            println!("{}, {}", base.0, self.memory.len());
             println!("Broken allocation");
             return None;
         }
 
         // Update current allocation if possible
-        self.curr_alc = VirtAddr::from(self.curr_alc.address.checked_add(align_size)?);
+        self.curr_alc = VirtAddr(self.curr_alc.0.checked_add(align_size)?);
 
         // Check if updated allocation is out of memory
-        if self.curr_alc.address > self.memory.len() as u64 {
+        if self.curr_alc.0 > self.memory.len() {
             println!("OOM");
             return None;
         }
@@ -132,8 +117,11 @@ impl Mmu {
         }
     }
 
-    pub fn write(&mut self, base: VirtAddr, data: &[u8], size: usize) -> Result<(), VmExit> {
-        for (offset, datum) in data.iter().enumerate() {}
+    pub fn write(&mut self, base: VirtAddr, data: &[u8]) -> Result<(), VmExit> {
+        for (offset, datum) in data.iter().enumerate() {
+            self.active_alcs
+                .insert(VirtAddr(base.0 + offset), *datum as usize);
+        }
 
         Ok(())
     }
@@ -147,19 +135,19 @@ impl Mmu {
 
         // Set permissions for every byte in the given range
         self.permissions
-            .get_mut((addr.address as usize)..(addr.address.checked_add(size as u64)? as usize))?
+            .get_mut(addr.0..addr.0.checked_add(size)?)?
             .iter_mut()
             .for_each(|x| *x = perm);
 
-        let block_start = addr.address / DIRTY_BLOCK_SIZE as u64;
-        let block_end = (addr.address + size as u64) / DIRTY_BLOCK_SIZE as u64;
+        let block_start = addr.0 / DIRTY_BLOCK_SIZE;
+        let block_end = (addr.0 + size) / DIRTY_BLOCK_SIZE;
 
         for block in block_start..=block_end {
-            let idx = (block / 64) as usize;
-            let bit = (block % 64) as usize;
+            let idx = block / 64;
+            let bit = block % 64;
 
             if self.dirty_bitmap[idx] & (1 << bit) == 0 {
-                self.dirty.push(block as usize);
+                self.dirty.push(block);
 
                 self.dirty_bitmap[idx] |= 1 << bit;
             }
@@ -214,18 +202,30 @@ pub enum VmExit {
     WriteFault(VirtAddr),
 }
 
-fn load_elf(elf: &Elf, mmu: &mut Mmu) {
+fn load_elf(elf: &Elf, mmu: &mut Mmu, path: PathBuf) -> Result<()> {
     println!("{:#?}", &elf.header);
     let headers = &elf.program_headers;
     println!("Found {} headers!", headers.len());
 
+    let mut f = File::open(path)?;
     // Load the loadable segments
     for header in headers {
         if header.p_type == 1 {
             println!("Loadable: {:#?}", header);
-            mmu.allocate(header.p_memsz as usize, Some(header.p_vaddr.into()));
+            let alloc = mmu
+                .allocate(header.p_memsz as usize, Some(header.p_vaddr.into()))
+                .ok_or(eyre!("Couldn't allocate correctly"))?;
+
+            // Copy data into memory
+            let mut mem = Vec::<u8>::with_capacity(header.p_memsz as usize);
+            f.seek(SeekFrom::Start(header.p_offset));
+            f.read(&mut mem)?;
+
+            mmu.write(alloc, &mem);
         }
     }
+
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -247,10 +247,10 @@ fn main() -> Result<()> {
 
     println!("Now lets load an ELF...");
     let path = PathBuf::from("ls");
-    let f = fs::read(path)?;
+    let f = fs::read(&path)?;
     match Object::parse(&f)? {
         Object::Elf(elf) => {
-            load_elf(&elf, &mut mmu);
+            load_elf(&elf, &mut mmu, path)?;
         }
         _ => println!("unknown"),
     };
