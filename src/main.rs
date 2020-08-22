@@ -1,8 +1,7 @@
 use eyre::{eyre, Result};
-use std::{fs::File, collections::BTreeMap, io::Read, path::PathBuf};
+use std::{fs::{self, File}, collections::BTreeMap, io::Read, path::PathBuf};
 
-pub mod elf;
-use elf::*;
+use goblin::{error, Object, elf::Elf};
 
 /// Block size used for resetting and tracking memory which has been modified
 /// The larger this is, the fewer but more expensive memcpys() need to occur,
@@ -32,6 +31,12 @@ pub struct Perm(pub u8);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VirtAddr(pub usize);
 
+impl From<u64> for VirtAddr {
+    fn from(address: u64) -> Self {
+        VirtAddr(address as usize)
+    }
+}
+
 struct Mmu {
     memory: Vec<u8>,
     permissions: Vec<Perm>,
@@ -55,10 +60,10 @@ impl Mmu {
         }
     }
 
-    pub fn allocate(&mut self, size: usize) -> Option<VirtAddr> {
+    pub fn allocate(&mut self, size: usize, offset: Option<VirtAddr>) -> Option<VirtAddr> {
         let align_size = (size + 0x01f) & !0x0f;
 
-        let base = self.curr_alc;
+        let base = offset.unwrap_or(self.curr_alc);
 
         // Allocation of 0 should nullop
         if size == 0 {
@@ -176,12 +181,27 @@ pub enum VmExit {
     WriteFault(VirtAddr),
 }
 
-fn main() -> Result<()> {
-    let mut mmu = Mmu::new(4096);
+fn load_elf(elf: &Elf, mmu: &mut Mmu) {
+    println!("{:#?}", &elf.header);
+    let headers = &elf.program_headers;
+    println!("Found {} headers!", headers.len());
 
-    let alloc1 = mmu.allocate(1).unwrap();
-    let alloc2 = mmu.allocate(1024).unwrap();
-    let alloc3 = mmu.allocate(2048).unwrap();
+    // Load the loadable segments
+    for header in headers {
+        if header.p_type == 1 {
+            println!("Loadable: {:#?}", header);
+            mmu.allocate(header.p_memsz as usize, Some(header.p_vaddr.into()));
+        }
+    }
+
+}
+
+fn main() -> Result<()> {
+    let mut mmu = Mmu::new(1024 * 1024 * 4);
+
+    let alloc1 = mmu.allocate(1, None).unwrap();
+    let alloc2 = mmu.allocate(1024, None).unwrap();
+    let alloc3 = mmu.allocate(2048, None).unwrap();
 
     println!("Base address of alloc1: {:?}", alloc1);
     println!("Base address of alloc2: {:?}", alloc2);
@@ -194,8 +214,14 @@ fn main() -> Result<()> {
     println!("Curr address: {:?}", mmu.curr_alc);
 
     println!("Now lets load an ELF...");
-
-    parse(PathBuf::from("ls"))?;
+    let path = PathBuf::from("ls");
+    let f = fs::read(path)?;
+    match Object::parse(&f)? {
+        Object::Elf(elf) => {
+            load_elf(&elf, &mut mmu);
+        },
+        _ => println!("unknown")
+    };
 
     Ok(())
 }
