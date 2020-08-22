@@ -1,7 +1,12 @@
 use eyre::{eyre, Result};
-use std::{fs::{self, File}, collections::BTreeMap, io::Read, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs::{self, File},
+    io::Read,
+    path::PathBuf,
+};
 
-use goblin::{error, Object, elf::Elf};
+use goblin::{elf::Elf, error, Object};
 
 /// Block size used for resetting and tracking memory which has been modified
 /// The larger this is, the fewer but more expensive memcpys() need to occur,
@@ -35,10 +40,7 @@ pub struct VirtAddr {
 
 impl VirtAddr {
     fn new(address: u64, content: u8) -> Self {
-        Self {
-            address,
-            content
-        }
+        Self { address, content }
     }
 }
 
@@ -83,7 +85,7 @@ impl Mmu {
         }
     }
 
-    /// Allocates a memory block `size` long at `offset`.  If no `offset` is given, uses 
+    /// Allocates a memory block `size` long at `offset`.  If no `offset` is given, uses
     /// `curr_alc` instead.
     pub fn allocate(&mut self, size: usize, offset: Option<VirtAddr>) -> Option<VirtAddr> {
         let align_size = ((size + 0x01f) & !0x0f) as u64;
@@ -131,9 +133,7 @@ impl Mmu {
     }
 
     pub fn write(&mut self, base: VirtAddr, data: &[u8], size: usize) -> Result<(), VmExit> {
-        for (offset, datum) in data.iter().enumerate() {
-            
-        };
+        for (offset, datum) in data.iter().enumerate() {}
 
         Ok(())
     }
@@ -153,7 +153,7 @@ impl Mmu {
 
         let block_start = addr.address / DIRTY_BLOCK_SIZE as u64;
         let block_end = (addr.address + size as u64) / DIRTY_BLOCK_SIZE as u64;
-        
+
         for block in block_start..=block_end {
             let idx = (block / 64) as usize;
             let bit = (block % 64) as usize;
@@ -209,7 +209,7 @@ pub enum VmExit {
     /// A read of memory which is uninitialized, but otherwise readable failed
     /// at `VirtAddr`
     UninitFault(VirtAddr),
-    
+
     /// An write of `VirtAddr` failed due to missing permissions
     WriteFault(VirtAddr),
 }
@@ -226,7 +226,6 @@ fn load_elf(elf: &Elf, mmu: &mut Mmu) {
             mmu.allocate(header.p_memsz as usize, Some(header.p_vaddr.into()));
         }
     }
-
 }
 
 fn main() -> Result<()> {
@@ -252,8 +251,8 @@ fn main() -> Result<()> {
     match Object::parse(&f)? {
         Object::Elf(elf) => {
             load_elf(&elf, &mut mmu);
-        },
-        _ => println!("unknown")
+        }
+        _ => println!("unknown"),
     };
 
     Ok(())
