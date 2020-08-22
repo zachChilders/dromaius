@@ -202,28 +202,29 @@ pub enum VmExit {
     WriteFault(VirtAddr),
 }
 
-fn load_elf(elf: &Elf, mmu: &mut Mmu, path: PathBuf) -> Result<()> {
-    println!("{:#?}", &elf.header);
-    let headers = &elf.program_headers;
-    println!("Found {} headers!", headers.len());
+fn load_elf(elf: &Elf, mmu: &mut Mmu, bin: &Vec<u8>) -> Result<()> {
 
-    let mut f = File::open(path)?;
-    // Load the loadable segments
+    // Read headers
+    let headers = &elf.program_headers;
+
+    // Load the loadable segments from binary
     for header in headers {
         if header.p_type == 1 {
-            println!("Loadable: {:#?}", header);
             let alloc = mmu
                 .allocate(header.p_memsz as usize, Some(header.p_vaddr.into()))
                 .ok_or(eyre!("Couldn't allocate correctly"))?;
 
             // Copy data into memory
-            let mut mem = Vec::<u8>::with_capacity(header.p_memsz as usize);
-            f.seek(SeekFrom::Start(header.p_offset));
-            f.read(&mut mem)?;
-
-            mmu.write(alloc, &mem);
+            let low = header.p_offset as usize;
+            let high = (header.p_offset + header.p_filesz) as usize;
+            let loadable = &bin[low..high];
+            mmu.write(alloc, loadable);
         }
     }
+
+    // Jump to entrypoint
+    let _entrypoint = elf.header.e_entry;
+    println!("Elf loaded successfully!  Fuck ya");
 
     Ok(())
 }
@@ -250,7 +251,7 @@ fn main() -> Result<()> {
     let f = fs::read(&path)?;
     match Object::parse(&f)? {
         Object::Elf(elf) => {
-            load_elf(&elf, &mut mmu, path)?;
+            load_elf(&elf, &mut mmu, &f)?;
         }
         _ => println!("unknown"),
     };
